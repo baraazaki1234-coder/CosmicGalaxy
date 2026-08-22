@@ -236,5 +236,8 @@ async def setstatus(ctx, *, status_text: str):
     await bot.change_presence(activity=discord.Game(name=status_text))
     await ctx.send(f"✅ تم تغيير حالة البوت إلى: **{status_text}**")
 
-bot.run("YOUR_BOT_TOKEN")
+import os
+
+bot.run(os.getenv("TOKEN"))
+
         

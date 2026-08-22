@@ -129,7 +129,6 @@ async def roll(ctx, bet: int):
 
     await ctx.send(msg)
 
-# استدعاء التوكن الخاص بالبوت من متغيرات البيئة أو استبداله بالتوكن المباشر
-TOKEN = os.getenv("DISCORD_TOKEN", "ضع_التوكن_الخاص_بكبوتك_هنا")
+TOKEN = os.getenv("DISCORD_TOKEN")
 bot.run(TOKEN)
-             
+

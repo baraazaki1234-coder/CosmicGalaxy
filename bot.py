@@ -2,6 +2,9 @@ import discord
 from discord.ext import commands
 import datetime
 import aiohttp
+import random
+import time
+import os
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -10,8 +13,9 @@ intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 # بيانات التخزين
-server_langs = {}   # {guild_id: 'ar' or 'en'}
-user_galaxies = {}  # {user_id: amount}
+server_langs = {}      # {guild_id: 'ar' or 'en'}
+user_galaxies = {}     # {user_id: amount}
+user_last_daily = {}   # {user_id: timestamp}
 
 # --- نظام أزرار التنقل لقائمة Help ---
 class HelpPaginator(discord.ui.View):
@@ -30,7 +34,7 @@ class HelpPaginator(discord.ui.View):
     @discord.ui.button(label="◀️ السابق", style=discord.ButtonStyle.blurple, custom_id="prev_btn")
     async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.ctx.author.id:
-            msg = "عذراً، هذا زر التفاعل لا يخصك." if self.lang == "ar" else "Sorry, these buttons are not for you."
+            msg = "عذراً، هذا الزر لا يخصك." if self.lang == "ar" else "Sorry, this button is not for you."
             return await interaction.response.send_message(msg, ephemeral=True)
         
         self.current_page -= 1
@@ -40,7 +44,7 @@ class HelpPaginator(discord.ui.View):
     @discord.ui.button(label="التالي ▶️", style=discord.ButtonStyle.blurple, custom_id="next_btn")
     async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id != self.ctx.author.id:
-            msg = "عذراً، هذا زر التفاعل لا يخصك." if self.lang == "ar" else "Sorry, these buttons are not for you."
+            msg = "عذراً، هذا الزر لا يخصك." if self.lang == "ar" else "Sorry, this button is not for you."
             return await interaction.response.send_message(msg, ephemeral=True)
             
         self.current_page += 1
@@ -60,33 +64,29 @@ async def help(ctx):
     lang = get_lang(ctx.guild)
     
     if lang == "ar":
-        # صفحة 1: الأعضاء
         p1 = discord.Embed(title="🌌 قائمة الأوامر - (1/3) أوامر الأعضاء", color=discord.Color.purple())
         p1.add_field(name="`!galaxies`", value="عرض رصيدك من المجرات.", inline=False)
-        p1.add_field(name="`!daily`", value="استلام المكافأة اليومية من المجرات.", inline=False)
+        p1.add_field(name="`!daily`", value="استلام المكافأة اليومية (عشوائية بين 50 و 200).", inline=False)
         p1.add_field(name="`!transfer @user <عدد>`", value="تحويل مجرات لعضو آخر.", inline=False)
         p1.add_field(name="`!profile [@user]`", value="عرض البروفايل وصورة الشخص ومجراته.", inline=False)
         p1.add_field(name="`!ping`", value="عرض سرعة استجابة البوت.", inline=False)
-        
+        p1.add_field(name="`!setlang <ar/en>`", value="تغيير لغة البوت داخل السيرفر.", inline=False)
 
-        # صفحة 2: الإدارة
         p2 = discord.Embed(title="🛡️ قائمة الأوامر - (2/3) أوامر الإدارة", color=discord.Color.dark_red())
         p2.add_field(name="`!clear <عدد>`", value="مسح عدد محدد من الرسائل.", inline=False)
         p2.add_field(name="`!kick @user [سبب]`", value="طرد عضو من السيرفر.", inline=False)
         p2.add_field(name="`!ban @user [سبب]`", value="حظر عضو من السيرفر.", inline=False)
         p2.add_field(name="`!timeout @user <دقائق>`", value="إعطاء تايم أوت (ميوت مؤقت) لعضو.", inline=False)
         p2.add_field(name="`!addgalaxies @user <عدد>`", value="إضافة مجرات لعضو معين.", inline=False)
-        p2.add_field(name="`!setlang <ar/en>`", value="تغيير لغة البوت داخل السيرفر.", inline=False)
-        # صفحة 3: المالك
+
         p3 = discord.Embed(title="👑 قائمة الأوامر - (3/3) أوامر المالك", color=discord.Color.gold())
         p3.add_field(name="`!setname <الاسم الجديد>`", value="تغيير اسم البوت.", inline=False)
         p3.add_field(name="`!setavatar <رابط/صورة>`", value="تغيير صورة البوت الشخصية.", inline=False)
         p3.add_field(name="`!setstatus <النص>`", value="تغيير الحالة (Activity) الخاصة بالبوت.", inline=False)
     else:
-        # English Pages
         p1 = discord.Embed(title="🌌 Help Menu - (1/3) Member Commands", color=discord.Color.purple())
         p1.add_field(name="`!galaxies`", value="Check your Galaxies balance.", inline=False)
-        p1.add_field(name="`!daily`", value="Claim your daily reward.", inline=False)
+        p1.add_field(name="`!daily`", value="Claim daily reward (Random 50 to 200).", inline=False)
         p1.add_field(name="`!transfer @user <amount>`", value="Transfer Galaxies to another member.", inline=False)
         p1.add_field(name="`!profile [@user]`", value="View member profile & Galaxies.", inline=False)
         p1.add_field(name="`!ping`", value="Check bot latency.", inline=False)
@@ -123,14 +123,34 @@ async def check_galaxies(ctx, member: discord.Member = None):
 
 @bot.command(aliases=["دايلي", "يومي"])
 async def daily(ctx):
-    reward = 100
-    user_galaxies[ctx.author.id] = user_galaxies.get(ctx.author.id, 0) + reward
+    user_id = ctx.author.id
+    now = time.time()
+    last_claim = user_last_daily.get(user_id, 0)
+    cooldown = 86400  # 24 ساعة بالثواني
     lang = get_lang(ctx.guild)
     
+    # التحقق من الوقت المتبقي
+    if now - last_claim < cooldown:
+        remaining = int(cooldown - (now - last_claim))
+        hours = remaining // 3600
+        minutes = (remaining % 3600) // 60
+        seconds = remaining % 60
+        
+        if lang == "ar":
+            await ctx.send(f"⏳ أخذت مكافأتك اليومية بالفعل! يرجى الانتظار **{hours} ساعة و {minutes} دقيقة و {seconds} ثانية**.")
+        else:
+            await ctx.send(f"⏳ You already claimed your daily reward! Wait **{hours}h {minutes}m {seconds}s**.")
+        return
+
+    # حساب المكافأة العشوائية بين 50 و 200
+    reward = random.randint(50, 200)
+    user_galaxies[user_id] = user_galaxies.get(user_id, 0) + reward
+    user_last_daily[user_id] = now
+    
     if lang == "ar":
-        await ctx.send(f"🎉 حصلت على **{reward}** مجرة هدية اليوم!")
+        await ctx.send(f"🎉 حصلت على **{reward}** مجرة هدية اليوم! رصيدك الحالي: **{user_galaxies[user_id]}** مجرة 🌌")
     else:
-        await ctx.send(f"🎉 You claimed your daily **{reward}** Galaxies!")
+        await ctx.send(f"🎉 You claimed **{reward}** random Galaxies today! Current balance: **{user_galaxies[user_id]}** Galaxies 🌌")
 
 @bot.command(aliases=["تحويل", "pay"])
 async def transfer(ctx, member: discord.Member, amount: int):
@@ -236,8 +256,4 @@ async def setstatus(ctx, *, status_text: str):
     await bot.change_presence(activity=discord.Game(name=status_text))
     await ctx.send(f"✅ تم تغيير حالة البوت إلى: **{status_text}**")
 
-import os
-
 bot.run(os.getenv("TOKEN"))
-
-        

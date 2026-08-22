@@ -1,5 +1,3 @@
 discord.py
 motor
 dnspython
-Flask
-requests

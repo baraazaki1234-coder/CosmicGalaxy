@@ -1,151 +1,96 @@
 import os
 import random
-import aiosqlite
 import discord
 from discord.ext import commands
-from aiohttp import web
 
-# إعدادات البوت والـ Intents
+# إعداد الصلاحيات
 intents = discord.Intents.default()
 intents.message_content = True
-intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-DB_NAME = "database.db"
+# تخزين مؤقت للرصيد
+balances = {}
 
-# خادم ويب وهمي لتوافق Render Web Service (الخطة المجانية)
-async def handle(request):
-    return web.Response(text="Bot is running standard!")
+def get_balance(user_id):
+    return balances.get(user_id, 100)
 
-async def start_web_server():
-    app = web.Application()
-    app.router.add_get('/', handle)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.getenv("PORT", 8080))
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    await site.start()
-
-# تجهيز قاعدة البيانات
-async def init_db():
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                credits INTEGER DEFAULT 0,
-                xp INTEGER DEFAULT 0,
-                level INTEGER DEFAULT 1
-            )
-        """)
-        await db.commit()
+def add_balance(user_id, amount):
+    balances[user_id] = get_balance(user_id) + amount
 
 @bot.event
 async def on_ready():
-    await init_db()
-    await start_web_server()
-    print(f"تم تشغيل البوت بنجاح باسم: {bot.user.name}")
+    print(f"تم تسجيل الدخول بنجاح باسم: {bot.user.name}")
 
-# الترحيب بالأعضاء الجدد
-@bot.event
-async def on_member_join(member):
-    channel = member.guild.system_channel
-    if channel:
-        await channel.send(f"أهلاً بك يا {member.mention} في السيرفر! 🎉")
+# ================= 1. أوامر الأعضاء العامة =================
 
-# نظام الخبرة واللفل مع كل رسالة
-@bot.event
-async def on_message(message):
-    if message.author.bot:
-        return
+@bot.command()
+async def ping(ctx):
+    latency = round(bot.latency * 1000)
+    await ctx.send(f"🏓 Pong! سرعة الاستجابة: **{latency}ms**")
 
-    user_id = message.author.id
+@bot.command()
+async def credits(ctx):
+    user_balance = get_balance(ctx.author.id)
+    await ctx.send(f"🪙 رصيد {ctx.author.mention}: **{user_balance}** كريدت")
 
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT credits, xp, level FROM users WHERE user_id = ?", (user_id,)) as cursor:
-            row = await cursor.fetchone()
-
-        if row is None:
-            await db.execute("INSERT INTO users (user_id, credits, xp, level) VALUES (?, 100, 10, 1)", (user_id,))
-        else:
-            credits, xp, level = row
-            new_xp = xp + 5
-            new_level = level
-            needed_xp = level * 100
-
-            if new_xp >= needed_xp:
-                new_level += 1
-                await message.channel.send(f"🎉 مبروك {message.author.mention}! ارتفع مستواك إلى Level **{new_level}**!")
-
-            await db.execute("UPDATE users SET xp = ?, level = ? WHERE user_id = ?", (new_xp, new_level, user_id))
-
-        await db.commit()
-
-    await bot.process_commands(message)
-
-# الأوامر المالية (الاقتصاد)
-@bot.command(name="credits", aliases=["balance", "رصيد", "فلوس"])
-async def credits(ctx, member: discord.Member = None):
-    target = member or ctx.author
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT credits FROM users WHERE user_id = ?", (target.id,)) as cursor:
-            row = await cursor.fetchone()
-            amount = row[0] if row else 0
-    await ctx.send(f"🪙 رصيد **{target.display_name}**: `{amount}` كريدت")
-
-@bot.command(name="daily", aliases=["راتب"])
+@bot.command()
+@commands.cooldown(1, 86400, commands.BucketType.user)  # 24 ساعة (86400 ثانية)
 async def daily(ctx):
-    user_id = ctx.author.id
-    reward = 200
-    async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute("""
-            INSERT INTO users (user_id, credits) VALUES (?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET credits = credits + ?
-        """, (user_id, reward, reward))
-        await db.commit()
-    await ctx.send(f"🎁 أخذت راتبك اليومي بقيمة **{reward}** كريدت!")
+    add_balance(ctx.author.id, 100)
+    await ctx.send(f"🎉 {ctx.author.mention}، أخذت مكافأتك اليومية بنجاح! (+100 كريدت)")
 
-# أوامر البروفايل والمستوى
-@bot.command(name="profile", aliases=["rank", "مستوى", "بروفايل"])
-async def profile(ctx, member: discord.Member = None):
-    target = member or ctx.author
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT xp, level FROM users WHERE user_id = ?", (target.id,)) as cursor:
-            row = await cursor.fetchone()
-            xp = row[0] if row else 0
-            level = row[1] if row else 1
-    await ctx.send(f"📊 **بروفايل {target.display_name}**:\nالمستوى: `{level}` | الخبرة: `{xp}/{level * 100}`")
+@daily.error
+async def daily_error(ctx, error):
+    if isinstance(error, commands.CommandOnCooldown):
+        seconds = int(error.retry_after)
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        await ctx.send(f"⏳ {ctx.author.mention}، انت أخذت المكافأة اليومية خلاص! فاضل **{hours} ساعة و {minutes} دقيقة**.")
 
-# لعبة حظ
-@bot.command(name="roll", aliases=["رول", "حظ"])
-async def roll(ctx, bet: int):
-    if bet <= 0:
-        await ctx.send("اكتب مبلغ أكبر من صفر!")
-        return
+@bot.command()
+async def roll(ctx):
+    number = random.randint(1, 100)
+    await ctx.send(f"🎲 الرقم العشوائي لـ {ctx.author.mention} هو: **{number}**")
 
-    async with aiosqlite.connect(DB_NAME) as db:
-        async with db.execute("SELECT credits FROM users WHERE user_id = ?", (ctx.author.id,)) as cursor:
-            row = await cursor.fetchone()
-            user_credits = row[0] if row else 0
+# ================= 2. أوامر إدارة السيرفر =================
 
-        if user_credits < bet:
-            await ctx.send("رصيدك لا يكفي لهذه الرهان!")
-            return
+@bot.command()
+@commands.has_permissions(manage_messages=True)
+async def clear(ctx, amount: int = 5):
+    await ctx.channel.purge(limit=amount + 1)
+    await ctx.send(f"🧹 تم مسح {amount} رسالة.", delete_after=3)
 
-        won = random.choice([True, False])
-        if won:
-            new_credits = user_credits + bet
-            msg = f"🎉 كسبت الرهان وتربحت **{bet}** كريدت!"
-        else:
-            new_credits = user_credits - bet
-            msg = f"❌ خسرت الرهان وضاع منك **{bet}** كريدت."
+@bot.command()
+@commands.has_permissions(kick_members=True)
+async def kick(ctx, member: discord.Member, *, reason="بدون سبب"):
+    await member.kick(reason=reason)
+    await ctx.send(f"👢 تم طرد {member.mention} | السبب: {reason}")
 
-        await db.execute("UPDATE users SET credits = ? WHERE user_id = ?", (new_credits, ctx.author.id))
-        await db.commit()
+# ================= 3. أوامر المالك (صاحب البوت فقط) =================
 
-    await ctx.send(msg)
+@bot.command()
+@commands.is_owner()
+async def restart(ctx):
+    await ctx.send("🔄 جاري إعادة تشغيل البوت...")
+    await bot.close()
 
-# تشغيل البوت باستخدام التوكن من متغيرات البيئة
-TOKEN = os.getenv("DISCORD_TOKEN")
+@bot.command()
+@commands.is_owner()
+async def addcredits(ctx, member: discord.Member, amount: int):
+    add_balance(member.id, amount)
+    await ctx.send(f"✅ تم إضافة **{amount}** كريدت لحساب {member.mention}")
+
+# ================= معالجة الأخطاء العامة =================
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ معندكش صلاحية لاستخدام الأمر ده!")
+    elif isinstance(error, commands.NotOwner):
+        await ctx.send("❌ الأمر ده مخصص لمالك البوت فقط!")
+
+# تشغيل البوت عبر متغيرات البيئة
+TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("BOT_TOKEN")
 bot.run(TOKEN)
-          
+    
